@@ -96,7 +96,7 @@ if echo $LCLS2_HUTCHES | grep -iw $HUTCH > /dev/null; then
     echo "This is a LCLS-II experiment"
     source $SIT_ENV_DIR/sw/conda2/manage/bin/psconda.sh
     ABS_PATH=`echo $MYDIR | sed  s/arp_scripts/summaries/g`
-    PLOT_PY=BeamlineSummaryPlots_$HUTCH
+    PLOT_PY=BeamlineSummaryPlots_${HUTCH}
     if [[ -v PEDESTAL ]]; then
         PLOT_PY=PedestalPlot
     fi
@@ -104,7 +104,7 @@ else
     source $SIT_ENV_DIR/sw/conda1/manage/bin/psconda.sh
     #conda activate ana-4.0.16-py3
     ABS_PATH=`echo $MYDIR | sed  s/arp_scripts/summaries/g`
-    PLOT_PY=BeamlineSummaryPlots_$HUTCH
+    PLOT_PY=BeamlineSummaryPlots_${HUTCH}
     if [[ -v PEDESTAL ]]; then
         PLOT_PY=PedestalPlot
     elif [[ -v BLD ]]; then
@@ -117,5 +117,5 @@ echo calling $ABS_PATH/$PLOT_PY.py $@
 if [[ -v INTERACTIVE ]]; then
     $ABS_PATH/$PLOT_PY.py $@
 else
-    sbatch -p $QUEUE --account $ACCOUNT $ABS_PATH/$PLOT_PY.py $@
+    sbatch -p $QUEUE --account $ACCOUNT --mem 16G $ABS_PATH/$PLOT_PY.py $@
 fi

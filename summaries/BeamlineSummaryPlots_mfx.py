@@ -8,6 +8,7 @@ import argparse
 import logging
 import socket
 import requests
+import socket
 from requests.auth import HTTPBasicAuth
 from typing import Optional, Tuple
 
@@ -18,6 +19,7 @@ import holoviews as hv
 from holoviews import dim
 hv.extension('bokeh')
 pn.extension()
+import pickle
 
 try:
     basestring
@@ -33,6 +35,8 @@ sys.path.append(fpath)
 from smalldata_tools.SmallDataAna_psana import SmallDataAna_psana as sdaps
 from smalldata_tools.utilities import image_from_dxy
 from smalldata_tools.utilities import rebin
+
+from typing import Optional, Tuple
 
 def getElogBasicAuth(exp: str) -> HTTPBasicAuth:
     """Return an authentication object for the eLog API for an opr account.
@@ -173,6 +177,7 @@ def postDetectorDamageMsg(
 
     for det_name in detectors:
         damage_var: np.ndarray = ana.getVar(f"damage/{det_name}")
+        if damage_var is None: continue
         damage: int = len(damage_var[damage_var == 0])
         dmg_percent: float = damage/len(damage_var)
         if dmg_percent > post_thresh:
@@ -309,36 +314,18 @@ lxtDim = hv.Dimension(('epics/lxt','lxt'))
 
 ipmUpVar = ana.getVar(ipmUpDim.name,useFilter=iniFilter)
 ipmDownVar = ana.getVar(ipmDownDim.name,useFilter=iniFilter)
-stepVar = ana.getVar('scan/varStep',useFilter=iniFilter)
+
 #l3eVar = ana.getVar('ebeam/L3_energy',useFilter=iniFilter)
 eventTimeRaw = ana.getVar('event_time',useFilter=iniFilter)
 eventTime = (eventTimeRaw>>32).astype(float)+((eventTimeRaw<<32)>>32).astype(float)*1e-9
 eventTimeR = eventTime-eventTime[0]
 
-eventTimeRMed = [np.nanmedian(eventTimeR[i*120:i*120+120]) for i in range(int(eventTimeR.shape[0]/120))]
-ipmUpMed =  [np.nanmedian(ipmUpVar[i*120:i*120+120]) for i in range(int(eventTimeR.shape[0]/120))]
-ipmDownMed =  [np.nanmedian(ipmDownVar[i*120:i*120+120]) for i in range(int(eventTimeR.shape[0]/120))]
-
 try:
-    azav = ana.getVar('epix10k2M/azav_azav',useFilter=iniFilter)
-    azav_sum = np.nanmean(azav, axis=0)
-    azav_peak = np.argmax(azav_sum)
-    if len(azav.shape)>2:
-        azav = np.nanmean(azav, axis=1)
-    scatterVar = np.nanmean(azav[:,max(0,azav_peak-50):min(azav.shape[1],azav_peak+50)], axis=1)
-    if len(scatterVar.shape)>1:
-        scatterVar = np.nanmean(scatterVar,axis=1)
+    eventTimeRMed = [np.nanmedian(eventTimeR[i*120:i*120+120]) for i in range(int(eventTimeR.shape[0]/120))]
+    ipmUpMed =  [np.nanmedian(ipmUpVar[i*120:i*120+120]) for i in range(int(eventTimeR.shape[0]/120))]
+    ipmDownMed =  [np.nanmedian(ipmDownVar[i*120:i*120+120]) for i in range(int(eventTimeR.shape[0]/120))]
 except:
-    scatterVar = None
-
-### Scan Variable
-
-try:
-    isStepScan = np.nanmax(stepVar)>0
-    scanVarBins = np.bincount(stepVar,weights=scatterVar)
-    scanNsteps = np.bincount(stepVar)
-except:
-    isStepScan = False
+    pass
 
 ### Fast delay stage
 
@@ -363,120 +350,134 @@ nOff = ana.getFilter(offFilter).sum()
 #########################################
 # INSERT DATA QUALITY PLOTS HERE
 #########################################
-ipmUpTime = hv.HexTiles((eventTimeR[ipmUpVar<np.nanpercentile(ipmUpVar,99)],
-                         ipmUpVar[ipmUpVar<np.nanpercentile(ipmUpVar,99)]),
-                        kdims=[eventTimeDim, ipmUpDim]).\
-                        opts(cmap='Blues')
-ipmUpTimeMed = hv.Points((eventTimeRMed, ipmUpMed), kdims=[eventTimeDim,ipmUpDim],label=ipmUpDim.label).\
-    options(color='r')
-ipmDownTimeMed = hv.Points((eventTimeRMed, ipmDownMed), kdims=[eventTimeDim,ipmUpDim],label=ipmDownDim.label).\
-    options(color='m')
+# Add new rows and columns to gspec just
+# by incrementing the values already present
+# This will insert the plots into the grid
+# place in try/except until happy it doesn't crash
 
-ipmTimeLayout = ipmUpTime*ipmUpTimeMed*ipmDownTimeMed
+#plots.
+try:
+    ipmUpTime = hv.HexTiles((eventTimeR[ipmUpVar<np.nanpercentile(ipmUpVar,99)],
+                             ipmUpVar[ipmUpVar<np.nanpercentile(ipmUpVar,99)]),
+                            kdims=[eventTimeDim, ipmUpDim]).\
+                            opts(cmap='Blues')
+    ipmUpTimeMed = hv.Points((eventTimeRMed, ipmUpMed), kdims=[eventTimeDim,ipmUpDim],label=ipmUpDim.label).\
+        options(color='r')
+    ipmDownTimeMed = hv.Points((eventTimeRMed, ipmDownMed), kdims=[eventTimeDim,ipmUpDim],label=ipmDownDim.label).\
+        options(color='m')
+        
+    ipmTimeLayout = ipmUpTime*ipmUpTimeMed*ipmDownTimeMed
+except:
+    ipmTimeLayout = None
+
+try:
+    ipmPlot = hv.HexTiles((ipmUpVar, ipmDownVar), kdims=[ipmUpDim, ipmDownDim])
+    ipmLayout = ipmPlot.hist(dimension=[ipmUpDim.name,ipmDownDim.name])
+    
+    stepPlot = None
+    
+    if lxt_fast_his is not None:
+        lxtPlot = hv.Points( (0.5*(lxt_fast_his[1][:-1]+lxt_fast_his[1][1:]), lxt_fast_his[0]), \
+                                 kdims=[lxtDim,nevtsLxtDim])
+    else:
+        lxtPlot = None
+except:
+    ipmLayout = None
+
+gspec = pn.GridSpec(sizing_mode='stretch_both', max_width=700, max_height=700, name='Data Quality - Run %d'%run)
+
+if ipmTimeLayout is not None and ipmLayout is not None:
+    gspec[0:2,0:8] = pn.Column(ipmTimeLayout.opts(axiswise=True))
+    gspec[2:5,0:4] = pn.Column(ipmLayout.opts(axiswise=True))
 
 
-ipmPlot = hv.HexTiles((ipmUpVar, ipmDownVar), kdims=[ipmUpDim, ipmDownDim])
-ipmLayout = ipmPlot.hist(dimension=[ipmUpDim.name,ipmDownDim.name])
-
-stepPlot = None
-
-if lxt_fast_his is not None:
-    lxtPlot = hv.Points( (0.5*(lxt_fast_his[1][:-1]+lxt_fast_his[1][1:]), lxt_fast_his[0]), \
-                             kdims=[lxtDim,nevtsLxtDim])
-else:
-    lxtPlot = None
-
-gspec = pn.GridSpec(sizing_mode='stretch_both', max_width=700, name='Data Quality - Run %d'%run)
-gspec[0:2,0:8] = pn.Column(ipmTimeLayout)
-gspec[2:5,0:4] = pn.Column(ipmLayout)
-
-detNames: list = ["epix_1", "Rayonix", "FEE_SPEC0", "EBeam"] # for tracking events missing data in one of these categories
+# Damage monitor (missing data items from events)
+detNames: list = ["Rayonix", "epix_1", "FEE_SPEC0", "EBeam"] # for tracking events missing data in one of these categories
 try:
     plots = []
     from holoviews.operation.timeseries import rolling
     for detname in detNames:
         damageDim = hv.Dimension((f'damage/{detname}', f'{detname} Present'))
         damageVar = ana.getVar(damageDim.name, useFilter=iniFilter)
-        damagePlot = rolling(
-            hv.Curve(
-                damageVar,
-                vdims=[damageDim],
-                label=f'{detname}'
-            ).opts(axiswise=True, color=hv.Palette('Spectral')),
-            rolling_window=10
-        )
+        if damageVar is None: continue
+        damagePlot = rolling(hv.Curve(
+            damageVar,
+            vdims=[damageDim],
+            label=f'{detname}').opts(
+            axiswise=True,
+            color=hv.Palette('Spectral')
+            ), rolling_window=10)
         plots.append(damagePlot)
     multiDamagePlot = hv.Overlay(plots).opts(
         xlabel='Event (rolling average of 10)',
-        ylabel='Present (Yes/No)',
-        title='Missing/Damaged Data'
+        ylabel='Data Present',
+        title='Missing Data'
     )
     gspec[2:5, 4:8] = multiDamagePlot
 
 except Exception as e:
     pass
 
-#########################################
-# Detector Images
-#########################################
-detNames = ["epix_1", "Rayonix"]
-
-detImgs=[]
-detGrids=[]
-for detImgName in ana.Keys('Sums'):
-    image = ana.fh5.get_node('/%s'%detImgName).read()
-    if len(image.shape)>2:
-        if detImgName.find('135')<0:
-            detName = detImgName.replace('Sums/','').replace('_calib','')
-            ix = ana.fh5.get_node('/UserDataCfg/%s/ix'%detName).read()
-            iy = ana.fh5.get_node('/UserDataCfg/%s/iy'%detName).read()
-            image = image_from_dxy(image, ix, iy)
-        else:
-            #somehow the epix10k135 has the wrong shape....
-            image = image[0]
-            #image = image.squeeze()
-    if max(image.shape[0], image.shape[1])>detImgMaxSize:
-        rebinFactor = float(detImgMaxSize)/max(image.shape[0],image.shape[1])
-        imageR = rebin(image, [int(image.shape[0]*rebinFactor), int(image.shape[1]*rebinFactor)])/(ana.getVar('fiducials').shape[0])
-    else:
-        imageR = image/(ana.getVar('fiducials').shape[0])
-    #imgArrays.append(imageR/ana.getVar('fiducials').shape[0])
-    imgDim = hv.Dimension(('image',detImgName.replace('Sums/','').replace('_calib_img',' Mean Image')),
-                                    range=(np.nanpercentile(imageR,1), np.nanpercentile(imageR,99.)))
-    detImgs.append(hv.Image(imageR, vdims=[imgDim], name=imgDim.label).options(colorbar=True, cmap='rainbow'))
-        
-    detGrid = pn.GridSpec(sizing_mode='stretch_both', max_width=700, name=detImgName.replace('Sums/',''))
-    detGrid[0,0] = pn.Row(detImgs[-1])
-    detGrids.append(detGrid)
-
-if nOff>100:
-    for detImgName in ana.Keys('Sums'):
-        detName = detImgName.replace('_calib','').replace('_img','').replace('Sums/','')
-        try:
-            common_mode=0
-            if detName.find('epix10k'): common_mode=80
-            anaps.AvImage(detName, useFilter=offFilter, numEvts=min(1000, nOff), common_mode=common_mode)
-        except:
-            print('failed to get off shot data for detector %s'%detName)
-            continue
-        avData = anaps.getAvImage(detName)[1]
-        try:
-            image = anaps.__dict__[detName].det.image(run, avData)
-        except:
-            print('failed to make image for detector %s'%detName)
-            continue
-        if max(image.shape[0], image.shape[1])>detImgMaxSize:
-            rebinFactor = float(detImgMaxSize)/max(image.shape[0],image.shape[1])
-            imageR = rebin(image, [int(image.shape[0]*rebinFactor), int(image.shape[1]*rebinFactor)])
-        else:
-            imageR = image
-        imgOffDim = hv.Dimension(('image_off',detImgName.replace('Sums/','').replace('_calib_img',' Mean Image Off')),
-                                    range=(np.nanpercentile(imageR,1), np.nanpercentile(imageR,99.)))
-        detImgs.append(hv.Image(imageR, vdims=[imgOffDim], name=imgOffDim.label).options(colorbar=True, cmap='rainbow'))
-        
-        detGrid = pn.GridSpec(sizing_mode='stretch_both', max_width=700, name='%s, dropped shots'%detName)
-        detGrid[0,0] = pn.Row(detImgs[-1])
-        detGrids.append(detGrid)
+# #########################################
+# # Detector Images
+# #########################################
+# detNames: list = ["epix_1", "Rayonix"] # Used for eLog damage reporting later and droplet plots
+# detImgs=[]
+# detGrids=[]
+# for detImgName in ana.Keys('Sums'):
+#     image = ana.fh5.get_node('/%s'%detImgName).read()
+#     if len(image.shape)>2:
+#         if detImgName.find('135')<0:
+#             detName = detImgName.replace('Sums/','').replace('_calib','')
+#             ix = ana.fh5.get_node('/UserDataCfg/%s/ix'%detName).read()
+#             iy = ana.fh5.get_node('/UserDataCfg/%s/iy'%detName).read()
+#             image = image_from_dxy(image, ix, iy)
+#         else:
+#             #somehow the epix10k135 has the wrong shape....
+#             image = image[0]
+#             #image = image.squeeze()
+#     if max(image.shape[0], image.shape[1])>detImgMaxSize:
+#         rebinFactor = float(detImgMaxSize)/max(image.shape[0],image.shape[1])
+#         imageR = rebin(image, [int(image.shape[0]*rebinFactor), int(image.shape[1]*rebinFactor)])/(ana.getVar('fiducials').shape[0])
+#     else:
+#         imageR = image/(ana.getVar('fiducials').shape[0])
+#     #imgArrays.append(imageR/ana.getVar('fiducials').shape[0])
+#     imgDim = hv.Dimension(('image',detImgName.replace('Sums/','').replace('_calib_img',' Mean Image')),
+#                                     range=(np.nanpercentile(imageR,1), np.nanpercentile(imageR,99.)))
+#     detImgs.append(hv.Image(imageR, vdims=[imgDim], name=imgDim.label).options(colorbar=True, cmap='rainbow'))
+#         
+#     detGrid = pn.GridSpec(sizing_mode='stretch_both', max_width=700, name=detImgName.replace('Sums/',''))
+#     detGrid[0,0] = pn.Row(detImgs[-1])
+#     detGrids.append(detGrid)
+# 
+# if nOff>100:
+#     for detImgName in ana.Keys('Sums'):
+#         detName = detImgName.replace('_calib','').replace('_img','').replace('Sums/','')
+#         try:
+#             common_mode=0
+#             if detName.find('epix10k'): common_mode=80
+#             anaps.AvImage(detName, useFilter=offFilter, numEvts=min(1000, nOff), common_mode=common_mode)
+#         except:
+#             print('failed to get off shot data for detector %s'%detName)
+#             continue
+#         avData = anaps.getAvImage(detName)[1]
+#         try:
+#             image = anaps.__dict__[detName].det.image(run, avData)
+#         except:
+#             print('failed to make image for detector %s'%detName)
+#             continue
+#         if max(image.shape[0], image.shape[1])>detImgMaxSize:
+#             rebinFactor = float(detImgMaxSize)/max(image.shape[0],image.shape[1])
+#             imageR = rebin(image, [int(image.shape[0]*rebinFactor), int(image.shape[1]*rebinFactor)])
+#         else:
+#             imageR = image
+#         imgOffDim = hv.Dimension(('image_off',detImgName.replace('Sums/','').replace('_calib_img',' Mean Image Off')),
+#                                     range=(np.nanpercentile(imageR,1), np.nanpercentile(imageR,99.)))
+#         detImgs.append(hv.Image(imageR, vdims=[imgOffDim], name=imgOffDim.label).options(colorbar=True, cmap='rainbow'))
+#         
+#         detGrid = pn.GridSpec(sizing_mode='stretch_both', max_width=700, name='%s, dropped shots'%detName)
+#         detGrid[0,0] = pn.Row(detImgs[-1])
+#         detGrids.append(detGrid)
 
 ########################
 # XES Droplet Plots
@@ -530,41 +531,40 @@ def processDropletData(
 
     return dimg, spatial_proj, xes_proj
 
-
-xesPlots = []
-for det in ["epix_1", "epix_2"]:# detNames:
-    try:
-        dimg, spatial_proj, xes_proj = processDropletData(ana=ana, det_name=det)
-        #dimg_flip = np.fliplr(dimg)
-
-        xes_grid = pn.GridSpec(max_width=700, name=f"XES - {det}")
-        img_dim = hv.Dimension(("Image", "Image"))
-        spatial_dim = hv.Dimension(("Spatial Projection", "Spatial Projection"))
-        xes_dim = hv.Dimension(("XES Spectrum", "XES Spectrum"))
-        xes_grid[:2, :] = hv.Image(
-            dimg,
-            bounds=(0, 0, dimg.shape[0], dimg.shape[1]),
-            vdims=[img_dim]).options(colorbar=True,
-            clim=(np.nanpercentile(dimg,1),np.nanpercentile(dimg,99.))
-        ).opts(xlabel="Spatial Axis", ylabel="Spectral Axis")
-        spatial_plot = hv.Curve(spatial_proj, vdims=[spatial_dim])
-        xes_plot = hv.Curve(xes_proj, vdims=[xes_dim])
-        xes_grid[2, :] = spatial_plot.opts(
-            axiswise=True,
-            xlabel="Pixel",
-            ylabel="Sum",
-            title="Spatial Projection"
-        )
-        xes_grid[3, :] = xes_plot.opts(
-            axiswise=True,
-            xlabel="Energy (Pixel)",
-            ylabel="I",
-            title="XES Spectrum"
-        )
-
-        xesPlots.append(xes_grid)
-    except Exception as e:
-        print(e)
+# xesPlots = []
+# for det in ["epix_1", "epix_2"]:# detNames:
+#     try:        
+#         dimg, spatial_proj, xes_proj = processDropletData(ana=ana, det_name=det)
+#         #dimg_flip = np.fliplr(dimg)
+# 
+#         xes_grid = pn.GridSpec(max_width=700, name=f"XES - {det}")
+#         img_dim = hv.Dimension(("Image", "Image"))
+#         spatial_dim = hv.Dimension(("Spatial Projection", "Spatial Projection"))
+#         xes_dim = hv.Dimension(("XES Spectrum", "XES Spectrum"))
+#         xes_grid[:2, :] = hv.Image(
+#             dimg,
+#             bounds=(0, 0, dimg.shape[0], dimg.shape[1]),
+#             vdims=[img_dim]).options(colorbar=True,
+#             clim=(np.nanpercentile(dimg,1),np.nanpercentile(dimg,99.))
+#         ).opts(xlabel="Spatial Axis", ylabel="Spectral Axis")
+#         spatial_plot = hv.Curve(spatial_proj, vdims=[spatial_dim])
+#         xes_plot = hv.Curve(xes_proj, vdims=[xes_dim])
+#         xes_grid[2, :] = spatial_plot.opts(
+#             axiswise=True,
+#             xlabel="Pixel",
+#             ylabel="Sum",
+#             title="Spatial Projection"
+#         )
+#         xes_grid[3, :] = xes_plot.opts(
+#             axiswise=True,
+#             xlabel="Energy (Pixel)",
+#             ylabel="I",
+#             title="XES Spectrum"
+#         )
+# 
+#         xesPlots.append(xes_grid)
+#     except Exception as e:
+#         print(e)
 
 ###########
 # FEE Plots
@@ -581,7 +581,8 @@ try:
         )
     feeGrid[:2, :2] = feeDamagePlot
 except Exception as e:
-    pass
+    print("Failed to produce FEE damage plot")
+    print(e)
 
 try:
     feeSpecDim = hv.Dimension(('feeBld/hproj','FEE Spec (mean)'))
@@ -596,7 +597,11 @@ try:
             title="FEE Spectrum"
         )
     feeGrid[:2, 2:4] = feeSpecPlot
+except Exception as e:
+    print("Failed to produce FEE spectrum plot")
+    print(e)
 
+try:
     x = np.arange(feeSpecVar[0].shape[0])
     feeCOMDim = hv.Dimension(('ProcessedFee', 'FEE COM'))
     feeCOMVar = np.sum(feeSpecVar*x, axis=1)/np.sum(feeSpecVar, axis=1)
@@ -613,16 +618,62 @@ try:
         )
     feeGrid[2:4, :2] = energyCorrPlot
 except Exception as e:
-    pass
+    print("Failed to produce FEE vs ebeam scatter plot")
+    print(e)
+
+try:
+    from scipy import stats
+    ENERGY_CONV = 12398.419843320027
+
+    feeCalibFile = f"/sdf/data/lcls/ds/{expname[:3]}/{expname}/results/common/fee/fee_calib.out"
+    with open(feeCalibFile, 'r') as contents:
+        calibList = contents.readlines()
+    def get_calib_values(line):
+        calibArgs, calibValStrings = line.split(',')
+        thisOffset = float(calibValStrings.split()[0].split('=')[1])
+        thisPerPixel = float(calibValStrings.split()[1].split('=')[1])
+        return thisOffset, thisPerPixel
+    for line in calibList[::-1]: # use most recent calibration
+        try:
+            eVOffset, eVPerPixel = get_calib_values(line)
+            break
+        except Exception:
+            continue
+    feeEVDim = hv.Dimension(('calibFEE', 'Calibrated FEE'))
+    feeEV = feeCOMVar * eVPerPixel + eVOffset
+    feeMu, feeStd = stats.norm.fit(feeEV) # fit a normal distribution
+    eBeamMu, eBeamStd = stats.norm.fit(eBeamVar) # fit a normal distribution
+    eBeamOffsetEV = feeMu - eBeamMu # correction to be applied to eBeam
+    eBeamOffsetWav = ENERGY_CONV/feeMu - ENERGY_CONV/eBeamMu
+    print(f"Calculated offset of {eBeamOffsetEV:.2f} eV or {eBeamOffsetWav:.6f} Å for eBeam in run {run}.")
+    feeFreqs, feeEdges = np.histogram(feeEV, 50)
+    feeLimits = np.percentile(feeEV, [1,99])
+    feeHist = hv.Histogram((feeEdges, feeFreqs), vdims=[feeEVDim], label="FEE").opts(
+        alpha=0.5, axiswise=True, framewise=True, shared_axes=False)
+    eBeamFreqs, eBeamEdges = np.histogram(eBeamVar, 50)
+    eBeamLimits = np.percentile(eBeamVar, [1,99])
+    eBeamHist = hv.Histogram((eBeamEdges, eBeamFreqs), vdims=[eBeamDim], label="eBeam").opts(
+        alpha=0.5, axiswise=True, framewise=True, shared_axes=False)
+    plotMin = min(feeLimits[0], eBeamLimits[0])
+    plotMax = max(feeLimits[1], eBeamLimits[1])
+    eVOffsetHist = hv.Overlay([eBeamHist, feeHist]).opts(
+        axiswise=True,
+        xlabel=f"FEE (eV)\nuse offset {eBeamOffsetEV:.2f} eV or {eBeamOffsetWav:.6f} Å",
+        ylabel="Frequency",
+        title="Calibrated FEE vs eBeam",
+        xlim=(plotMin, plotMax)
+    )
+    feeGrid[2:4, 2:4] = eVOffsetHist
+except Exception as e:
+    print("Failed to produce FEE vs ebeam histograms")
+    print(e)
 
 ########################
 # Tabs construction and finish
 ########################
 
 tabs = pn.Tabs(gspec)
-
-for xes_grid in xesPlots:
-    tabs.append(xes_grid)
+tabs.append(feeGrid)
 
 for detGrid in detGrids:
     tabs.append(detGrid)
@@ -642,11 +693,10 @@ if save_elog:
         detectors=detNames,
         exp=expname,
         run=run,
-        title=f"EVENT DAMAGE INFO- r{run:04d}",
+        title=f"DETECTOR DAMAGE INFO - r{run:04d}",
         smd_dir=args.directory,
         post_thresh=0.1 # Percentage threshold to post to eLog
     )
-
     if (int(os.environ.get('RUN_NUM', '-1')) > 0):
         requests.post(os.environ["JID_UPDATE_COUNTERS"], json=[{"key": "<b>BeamlineSummary Plots </b>", "value": "Posted"}])
 
