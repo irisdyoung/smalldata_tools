@@ -39,11 +39,32 @@ def getROIs(run):
         run=int(run)
     ret_dict = {}
     if run>0:
+        # rayonix
         roi_dict = {}
-        roi_dict['ROIs'] = [ [[1,2], [157,487], [294,598]] ] # can define more than one ROI
+        roi_dict['ROIs'] = [ [[10,20], [15,30]] ] # can define more than one ROI
         roi_dict['writeArea'] = True
         roi_dict['thresADU'] = None
-        ret_dict['jungfrau1M'] = roi_dict
+        ret_dict['Rayonix'] = roi_dict
+
+        #epix100_1
+        roi_dict = {}
+        roi_dict['ROIs'] = [ [[100,275], [0,773]] ] # can define more than one ROI
+        roi_dict['writeArea'] = True
+        roi_dict['thresADU'] = None
+        ret_dict['epix_1'] = roi_dict
+    return ret_dict
+
+def getDropletParams(run):
+    if isinstance(run,str):
+        run=int(run)
+    ret_dict = {}
+    dfunc_dict = {}
+    dfunc_dict['threshold'] = 20#110./32
+    #dfunc_dict['thresholdLow'] = 10./8
+    #dfunc_dict['thresADU'] = 4.
+    dfunc_dict['useRms'] = False #just for now, the newest version can use RMS values for the jungfrau
+    ret_dict['epix_1'] = dfunc_dict
+    #ret_dict['ePix100_1'] = dfunc_dict
     return ret_dict
 
 def isDropped(def_data):
@@ -51,6 +72,40 @@ def isDropped(def_data):
         return True
     return False
 
+def getSpectrumProj(run):
+    if isinstance(run, str):
+        run = int(run)
+    ret_dict = {}
+
+    if run > 0:
+        proj_dict = {}
+        proj_dict["name"] = "spectrum_projection"
+        proj_dict["threshADU"] = 1e-6
+        proj_dict["axis"] = 0
+        proj_dict["mean"] = False
+        proj_dict["threshRms"] = 1e-6
+        proj_dict["singlePhoton"] = False
+
+        ret_dict['epix_1'] = proj_dict
+    return ret_dict
+
+def getSpatialProj(run):
+    if isinstance(run, str):
+        run = int(run)
+    ret_dict = {}
+
+    if run > 0:
+        proj_dict = {}
+        proj_dict["name"] = "spatial_projection"
+        proj_dict["threshADU"] = 1e-6
+        proj_dict["axis"] = 1
+        proj_dict["mean"] = False
+        proj_dict["threshRms"] = 1e-6
+        proj_dict["singlePhoton"] = False
+
+        ret_dict['epix_1'] = proj_dict
+    return ret_dict
+    
 ##########################################################
 # run independent parameters 
 ##########################################################
@@ -78,7 +133,7 @@ aioParams=[]
 
 # DEFINE DETECTOR AND ADD ANALYSIS FUNCTIONS
 def define_dets(run):
-    detnames = ['jungfrau1M'] # add detector here
+    detnames = ['Rayonix', 'epix_1'] # add detector here
     dets = []
     
     # Load DetObjectFunc parameters (if defined)
@@ -122,7 +177,18 @@ def define_dets(run):
     except Exception as e:
         print(f'Can\'t instantiate SVD args: {e}')
         svd = []
-        
+
+    try:
+        hproj = getSpatialProj(run)
+    except Exception as e:
+        print(f"Can't instantiate spatialProj args: {e}")
+        hproj = []
+    try:
+        vproj = getSpectrumProj(run)
+    except Exception as e:
+        print(f"Can't instantiate spectrumProj args: {e}")
+        vproj = []
+
     # Define detectors and their associated DetObjectFuncs
     for detname in detnames:
         havedet = checkDet(ds.env(), detname)
@@ -136,13 +202,22 @@ def define_dets(run):
             det = DetObject(detname ,ds.env(), int(run), common_mode=common_mode)
             
             # Analysis functions
-            # ROIs:
+            # ROIs and Projections:
             if detname in ROIs:
                 for iROI,ROI in enumerate(ROIs[detname]['ROIs']):
-                    det.addFunc(ROIFunc(name='ROI_%d'%iROI,
-                                        ROI=ROI,
-                                        writeArea=ROIs[detname]['writeArea'],
-                                        thresADU=ROIs[detname]['thresADU']))
+                    detROIFunc = ROIFunc(name=f"ROI_{iROI}",
+                                         ROI=ROI,
+                                         writeArea=ROIs[detname]['writeArea'],
+                                         thresADU=ROIs[detname]['thresADU'])
+                    if detname in hproj:
+                        hprojFunc = projectionFunc(**hproj[detname])
+                        detROIFunc.addFunc(hprojFunc)
+                    if detname in vproj:
+                        vprojFunc = projectionFunc(**vproj[detname])
+                        detROIFunc.addFunc(vprojFunc)
+                    det.addFunc(detROIFunc)
+                
+                
             # Azimuthal binning
             if detname in az:
                 det.addFunc(azimuthalBinning(**az[detname]))
@@ -153,13 +228,21 @@ def define_dets(run):
                 det.addFunc(photonFunc(**phot[detname]))
             # Droplet algo
             if detname in drop:
-                if nData in drop:
-                    nData = drop.pop('nData')
+                dfunc = dropletFunc(**drop[detname])
+                if 'nData' in drop[detname].keys():
+                    nData = drop[detname].pop('nData')
                 else:
                     nData = None
-                func = dropletFunc(**drop[detname])
-                func.addFunc(roi.sparsifyFunc(nData=nData))
-                det.addFunc(func)
+                dfunc.addFunc(sparsifyFunc(nData=nData))
+                det.addFunc(dfunc)
+
+                #special code for MFX-tape drive analysis
+                fullROI = ROIFunc(name='full',
+                                  ROI=None,
+                                  thresADU=dfunc.thresholdLow)
+                fullROI.addFunc(sparsifyFunc(nData=None))                
+                det.addFunc(fullROI)
+                
             # Droplet to photons
             if detname in drop2phot:
                 if 'nData' in drop2phot[detname]:
@@ -184,8 +267,8 @@ def define_dets(run):
                 det.addFunc(svdFit(**svd[detname]))
 
             det.storeSum(sumAlgo='calib')
-            det.storeSum(sumAlgo='calib_dropped')
-            det.storeSum(sumAlgo='calib_dropped_square')
+            #det.storeSum(sumAlgo='calib_dropped')
+            det.storeSum(sumAlgo='calib_square')
             #det.storeSum(sumAlgo='calib_img')
             dets.append(det)
     return dets
@@ -245,14 +328,14 @@ logger = logging.getLogger(__name__)
 
 # Constants
 HUTCHES = [
-    'AMO',
-    'SXR',
-    'XPP',
-    'XCS',
-    'MFX',
-    'CXI',
-    'MEC',
-    'DIA'
+	'AMO',
+	'SXR',
+	'XPP',
+	'XCS',
+	'MFX',
+	'CXI',
+	'MEC',
+	'DIA'
 ]
 
 S3DF_BASE = Path('/sdf/data/lcls/ds/')
@@ -260,7 +343,7 @@ FFB_BASE = Path('/cds/data/drpsrcf/')
 PSANA_BASE = Path('/cds/data/psdm/')
 PSDM_BASE = Path(os.environ.get('SIT_PSDM_DATA', S3DF_BASE))
 SD_EXT = Path('./hdf5/smalldata/')
-logger.info(f"PSDM_BASE={PSDM_BASE}")
+logger.debug(f"PSDM_BASE={PSDM_BASE}")
 
 # Define Args
 parser = argparse.ArgumentParser()
@@ -410,14 +493,14 @@ if hostname.find('sdf')>=0:
         waitFilesStart=datetime.now()
         while nFiles == 0:
             if n_wait > max_wait:
-                print(f"Waited {str(n_wait*10)}s, still no files available. " \
-                       "Giving up, please check dss nodes and data movers. " \
+                print(f"Waited {str(n_wait*10)}s, still no files available." \
+                       "Giving up, please check dss nodes and data movers." \
                        "Exiting now.")
                 sys.exit()
             xtc_files = get_xtc_files(PSDM_BASE, exp, run)
             nFiles = len(xtc_files)
             if nFiles == 0:
-                print(f"We have no xtc files for run {run} in {exp} in the FFB system, " \
+                print(f"We have no xtc files for run {run} in {exp} in the FFB system," \
                       "we will wait for 10 second and check again.")
                 n_wait+=1
                 time.sleep(10)
@@ -722,7 +805,7 @@ dets_time_start = (start_setup_dets-start_job)/60
 dets_time_end = (end_setup_dets-start_job)/60
 evt_time_start = (start_evt_loop-start_job)/60
 evt_time_end = (end_evt_loop-start_job)/60
-logger.debug(f"##### Timing benchmarks core {ds.rank}: ##### """)
+logger.debug(f"##### Timing benchmarks core {ds.rank}: ##### ")
 logger.debug(f'Setup dets: \n\tStart: {dets_time_start:.2f} min\n\tEnd: {dets_time_end:.2f} min')
 logger.debug(f'\tDuration:{dets_time_end-dets_time_start:.2f}')
 logger.debug(f'Event loop: \n\tStart: {evt_time_start:.2f} min\n\tEnd: {evt_time_end:.2f} min')
@@ -751,18 +834,15 @@ logger.debug('Saved all small data')
 # Should we put it under /sdf/ as well?
 if args.postRuntable and ds.rank==0:
     print('Posting to the run tables.')
-    locStr=''
-    if useFFB:
-        locStr='_ffb'
-    runtable_data = {"Prod%s_end"%locStr:end_prod_time,
-                     "Prod%s_start"%locStr:begin_prod_time,
-                     "Prod%s_jobstart"%locStr:begin_job_time,
-                     "Prod%s_duration_mins"%locStr:prod_time,
-                     "Prod%s_ncores"%locStr:ds.size}
+    runtable_data = {"Prod_end":end_prod_time,
+                     "Prod_start":begin_prod_time,
+                     "Prod_jobstart":begin_job_time,
+                     "Prod_duration_mins":prod_time,
+                     "Prod_ncores":ds.size}
     if args.default:
-        runtable_data["SmallData%s"%locStr]="default"
+        runtable_data["SmallData"]="default"
     else:
-        runtable_data["SmallData%s"%locStr]="done"
+        runtable_data["SmallData"]="done"
     time.sleep(5)
     ws_url = args.url + "/run_control/{0}/ws/add_run_params".format(args.experiment)
     print('URL:',ws_url)
