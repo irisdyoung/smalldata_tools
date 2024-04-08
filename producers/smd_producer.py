@@ -105,7 +105,27 @@ def getSpatialProj(run):
 
         ret_dict['epix_1'] = proj_dict
     return ret_dict
-    
+
+def getRadialAverageParams(run):
+    if isinstance(run,str):
+        run=int(run)
+    ret_dict = {}
+
+    if run > 0:
+        rad_dict = {}
+        rad_dict['name'] = 'radial_average'
+        rad_dict['innerRadius'] = 75 # px
+        rad_dict['ringWidth'] = 1 # px
+        rad_dict['numRings'] = 875
+        rad_dict['center'] = (971,958) # px
+        rad_dict['imgShape'] = (1920,1920) # px
+        rad_dict['pxSize'] = 0.176 # mm
+        rad_dict['distance'] = 227 # mm
+        rad_dict['run'] = run
+
+        ret_dict['Rayonix'] = rad_dict
+    return ret_dict
+
 ##########################################################
 # run independent parameters 
 ##########################################################
@@ -152,6 +172,11 @@ def define_dets(run):
     except Exception as e:
         print(f'Can\'t instantiate AzIntPyFAI args: {e}')
         az_pyfai = []
+    try:
+        radAvg = getRadialAverageParams(run)
+    except Exception as e:
+        print(f'Can\'t instantiate radialAverage args: {e}')
+        radAvg = []
     try:
         phot = getPhotonParams(run)
     except Exception as e:
@@ -223,6 +248,11 @@ def define_dets(run):
                 det.addFunc(azimuthalBinning(**az[detname]))
             if detname in az_pyfai:
                 det.addFunc(azav_pyfai(**az_pyfai[detname]))
+            # Radial averaging
+            if detname in radAvg:
+                radialAverage = radialAverageFunc(**radAvg[detname])
+                radialAverage.setFromDet(det)
+                det.addFunc(radialAverage)
             # Photon count
             if detname in phot:
                 det.addFunc(photonFunc(**phot[detname]))
@@ -301,7 +331,7 @@ sys.excepthook = global_except_hook
 fpath=os.path.dirname(os.path.abspath(__file__))
 fpathup = '/'.join(fpath.split('/')[:-1])
 sys.path.append(fpathup)
-print(f'\n{fpathup}')
+#print(f'\n{fpathup}')
 
 from smalldata_tools.utilities import printMsg, checkDet
 from smalldata_tools.SmallDataUtils import setParameter, getUserData, getUserEnvData
@@ -321,6 +351,7 @@ from smalldata_tools.ana_funcs.azimuthalBinning import azimuthalBinning
 from smalldata_tools.ana_funcs.azav_pyfai import azav_pyfai
 from smalldata_tools.ana_funcs.smd_svd import svdFit
 from smalldata_tools.ana_funcs.correlations.smd_autocorr import Autocorrelation
+from smalldata_tools.ana_funcs.radialAverage import radialAverageFunc
 
 #logging.basicConfig(level=logging.DEBUG)
 logging.basicConfig(level=logging.INFO)
@@ -397,6 +428,10 @@ parser.add_argument('--image',
 parser.add_argument('--tiff', 
                     help='save all images as single tiff (use with extreme care)',
                     action='store_true', 
+                    default=False)
+parser.add_argument('--radialAverage',
+                    help='save radial averages of images for given det dist and center',
+                    action='store_true',
                     default=False)
 parser.add_argument('--centerpix', 
                     help='do not mask center pixels for epix10k detectors.', 

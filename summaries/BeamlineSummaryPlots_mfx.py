@@ -323,6 +323,14 @@ try:
 except:
     pass
 
+# Also enable filter on FEE presence (intersection with X-ray events)
+try:
+    ana.addCut('lightStatus/xray',0.5,1.5,'fee')
+    ana.addCut('lightStatus/laser',0.5,1.5,'fee')
+    ana.addCut('damage/FEE_SPEC0',-0.5,0.5,'fee')
+except Exception as e:
+    print(f'Could not create filter on FEE presence: {e}')
+
 ### Fast delay stage 
 
 lxt_fast_his = None
@@ -342,6 +350,25 @@ if ana.getFilter('hxroff').sum() >  ana.getFilter('off').sum():
 else:
     offFilter = 'off'    
 nOff = ana.getFilter(offFilter).sum()
+
+### T-jump
+
+#sort images by event code
+dataTjump = [{'code':203, 'codename':'on'},
+             {'code':204, 'codename':'off1'},
+             {'code':205, 'codename':'off2'}]
+
+#filters by IR laser state
+for dataDict in dataTjump:
+    code = dataDict['code']
+    codename = dataDict['codename']
+    try:
+        ana.addCut(f'evr/code_{code}',0.5,1.5,codename)
+        print(f'Laser state {codename} found with code {code}')
+    except Exception:
+        print(f'No data item found for laser {codename} state, code {code}')
+        continue
+
 
 #########################################
 # INSERT DATA QUALITY PLOTS HERE
@@ -579,6 +606,7 @@ try:
 except Exception as e:
     print("Failed to produce FEE damage plot")
     print(e)
+    feeDamageVar = None
 
 try:
     feeSpecDim = hv.Dimension(('feeBld/hproj','FEE Spec (mean)'))
@@ -616,6 +644,7 @@ try:
 except Exception as e:
     print("Failed to produce FEE vs ebeam scatter plot")
     print(e)
+    eBeamVar = None
 
 try:
     from scipy import stats
@@ -663,6 +692,63 @@ try:
 except Exception as e:
     print("Failed to produce FEE vs ebeam histograms")
     print(e)
+    feeEV = None
+
+###########
+# T-jump
+###########
+TjumpGrid = pn.GridSpec(max_width=1500, max_height=1500, name="T-jump")
+
+try:
+    radialAvgTwoThetaDim = hv.Dimension(('Rayonix/radial_average_twoTheta', 'Rayonix radial average two theta'))
+    radialAvgIDim = hv.Dimension(('Rayonix/radial_average_medianI', 'Rayonix radial average I'))
+except Exception as e:
+    print(f'Could not get Tjump dimensions from smalldata: {e}')
+
+try:
+    # Radial averages (sparse selection from the middle of the run)
+    import skbeam.core.utils as skutils
+
+    if feeEV is not None: # get energy from calibrated FEE
+        radTwoTheta = ana.getVar(radialAvgTwoThetaDim.name,useFilter='fee')
+        eVar = feeEV
+        radFilter = 'fee'
+    else:
+        radTwoTheta = ana.getVar(radialAvgTwoThetaDim.name,useFilter=iniFilter)
+        eVar = eBeamVar
+        radFilter = iniFilter
+
+    length = len(radTwoTheta)
+    start, end = int(length*0.3), int(length*0.7)
+    radTwoTheta = radTwoTheta[start:end:13]
+    radEnergy = eVar[start:end:13]
+    radWav = ENERGY_CONV/radEnergy
+    radQ = np.array([skutils.twotheta_to_q(tt,w) for (tt,w) in zip(radTwoTheta, radWav)])
+    radI = ana.getVar(radialAvgIDim.name,useFilter=radFilter)[start:end:13]
+
+    curves = []
+    qmin, qmax = np.min(radQ), np.max(radQ)
+    Imin, Imax = np.min(radI), np.max(radI)
+    for q,I in zip(radQ, radI):
+        curves.append(hv.Curve(
+            zip(q,I),
+            #vdims=[radialAvgIDim],
+            #hdims=[radialAvgQDim],
+            #).opts(
+            #xlim=(qmin, qmax)
+            )
+        )
+    radAvgCurves = hv.Overlay(curves).opts(
+        axiswise=True,
+        xlabel='q',
+        ylabel='median I',
+        title='Radial averages',
+        #xlim=(qmin, qmax),
+        #ylim=(0, Imax),
+    ).redim(
+        x=hv.Dimension('q', range=(qmin, qmax))
+    )
+    TjumpGrid[:1,:2] = radAvgCurves
 
 ########################
 # Tabs construction and finish
@@ -670,6 +756,7 @@ except Exception as e:
 
 tabs = pn.Tabs(gspec)
 tabs.append(feeGrid)
+tabs.append(TjumpGrid)
 
 #for xes_grid in xesPlots:
 #    tabs.append(xes_grid)
@@ -680,7 +767,7 @@ tabs.append(feeGrid)
 if (int(os.environ.get('RUN_NUM', '-1')) > 0):
     requests.post(os.environ["JID_UPDATE_COUNTERS"], json=[{"key": "<b>BeamlineSummary Plots </b>", "value": "Done"}])
 
-elogDir = f"/sdf/data/lcls/ds/{expname[:3]}/{expname}/stats/summary/BeamlineSummary/BeamlineSummary_Run{run:03d}"
+elogDir = f"/sdf/data/lcls/ds/{expname[:3]}/{expname}/stats/summary/BeamlineSummary/Plots_Run{run:03d}"
 
 if save_elog:
     import os
